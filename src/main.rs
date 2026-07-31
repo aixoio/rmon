@@ -146,6 +146,9 @@ impl App {
                             self.running = false;
                         }
                     }
+                    event::KeyCode::Char('q') | event::KeyCode::Esc => {
+                        self.running = false;
+                    }
                     _ => {}
                 }
             }
