@@ -174,7 +174,7 @@ impl App {
 
         let dataset_up = Dataset::default()
             .name("Upload")
-            .marker(Marker::Dot)
+            .marker(Marker::HalfBlock)
             .graph_type(GraphType::Line)
             .style(Style::default().fg(Color::Green))
             .data(&upload_data);
@@ -187,7 +187,7 @@ impl App {
 
         let dataset_down = Dataset::default()
             .name("Download")
-            .marker(Marker::Dot)
+            .marker(Marker::HalfBlock)
             .graph_type(GraphType::Line)
             .style(Style::default().fg(Color::Cyan))
             .data(&download_data);
