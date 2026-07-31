@@ -1,4 +1,4 @@
-use std::time::Duration;
+use std::{collections::VecDeque, time::Duration};
 
 use chrono::{DateTime, Local};
 use crossterm::event::{self, Event, EventStream, KeyEventKind, KeyModifiers};
@@ -25,6 +25,8 @@ enum Msg {
     },
     Crossterm(event::Event),
 }
+
+const MAX_DATA_POINTS: usize = 120;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -76,7 +78,7 @@ struct App {
     rx: Receiver<Msg>,
 
     running: bool,
-    data: Vec<(u64, u64, DateTime<Local>)>,
+    data: VecDeque<(u64, u64, DateTime<Local>)>,
     data_min: (u64, u64),
     data_max: (u64, u64),
 }
@@ -86,7 +88,7 @@ impl App {
         App {
             rx,
             running: true,
-            data: vec![],
+            data: VecDeque::new(),
             data_max: (0, 0),
             data_min: (0, 0),
         }
@@ -117,34 +119,22 @@ impl App {
     }
 
     fn update_data(&mut self, up: u64, down: u64, time: DateTime<Local>) {
-        if self.data.is_empty() {
-            self.data_min = (up, down);
-            self.data_max = (up, down);
-            self.data.push((up, down, time));
-            return;
+        self.data.push_back((up, down, time));
+
+        if self.data.len() > MAX_DATA_POINTS {
+            self.data.pop_front();
         }
 
-        let (umin, dmin) = self.data_min;
+        let first = self.data.front().expect("data was just added");
+        self.data_min = (first.0, first.1);
+        self.data_max = (first.0, first.1);
 
-        if umin > up {
-            self.data_min.0 = up;
+        for &(up, down, _) in &self.data {
+            self.data_min.0 = self.data_min.0.min(up);
+            self.data_min.1 = self.data_min.1.min(down);
+            self.data_max.0 = self.data_max.0.max(up);
+            self.data_max.1 = self.data_max.1.max(down);
         }
-
-        if dmin > down {
-            self.data_min.1 = down;
-        }
-
-        let (umax, dmax) = self.data_max;
-
-        if umax < up {
-            self.data_max.0 = up;
-        }
-
-        if dmax < down {
-            self.data_max.1 = down;
-        }
-
-        self.data.push((up, down, time));
     }
 
     fn handle_events(&mut self, event: Event) -> anyhow::Result<()> {
@@ -193,8 +183,8 @@ impl App {
             .data(&download_data);
 
         let x_bounds = [
-            self.data.first().unwrap().2.timestamp_millis() as f64,
-            self.data.last().unwrap().2.timestamp_millis() as f64 + 1.0,
+            self.data.front().unwrap().2.timestamp_millis() as f64,
+            self.data.back().unwrap().2.timestamp_millis() as f64 + 1.0,
         ];
         let areas = Layout::vertical([
             Constraint::Length(1),
@@ -202,7 +192,7 @@ impl App {
             Constraint::Fill(1),
         ])
         .split(frame.area());
-        let current = self.data.last().unwrap();
+        let current = self.data.back().unwrap();
         let status = Paragraph::new(format!(
             "Upload: {}   Download: {}",
             current.0.human_throughput_bytes(),
@@ -228,5 +218,30 @@ impl App {
         frame.render_widget(status, areas[0]);
         frame.render_widget(upload_chart, areas[1]);
         frame.render_widget(download_chart, areas[2]);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn data_history_discards_old_samples_and_recalculates_bounds() {
+        let (_tx, rx) = mpsc::channel(1);
+        let mut app = App::new(rx);
+
+        app.update_data(1_000, 0, Local::now());
+        for value in 1..=MAX_DATA_POINTS as u64 {
+            app.update_data(value, value, Local::now());
+        }
+
+        assert_eq!(app.data.len(), MAX_DATA_POINTS);
+        assert_eq!(app.data.front().unwrap().0, 1);
+        assert_eq!(app.data.back().unwrap().0, MAX_DATA_POINTS as u64);
+        assert_eq!(app.data_min, (1, 1));
+        assert_eq!(
+            app.data_max,
+            (MAX_DATA_POINTS as u64, MAX_DATA_POINTS as u64)
+        );
     }
 }
