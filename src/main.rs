@@ -4,12 +4,11 @@ use chrono::{DateTime, Local};
 use crossterm::event::{self, Event, EventStream, KeyEventKind, KeyModifiers};
 use futures::StreamExt;
 use ratatui::{
-    DefaultTerminal, Frame, Terminal,
-    buffer::Buffer,
-    layout::Rect,
+    DefaultTerminal, Frame,
+    layout::{Constraint, Layout},
     style::{Color, Style, Stylize},
-    symbols::{Marker, marker},
-    widgets::{Axis, Chart, Dataset, GraphType, Widget},
+    symbols::Marker,
+    widgets::{Axis, Chart, Dataset, GraphType},
 };
 use sysinfo::Networks;
 use tokio::{
@@ -113,6 +112,13 @@ impl App {
     }
 
     fn update_data(&mut self, up: u64, down: u64, time: DateTime<Local>) {
+        if self.data.is_empty() {
+            self.data_min = (up, down);
+            self.data_max = (up, down);
+            self.data.push((up, down, time));
+            return;
+        }
+
         let (umin, dmin) = self.data_min;
 
         if umin > up {
@@ -158,41 +164,52 @@ impl App {
         let upload_data: Vec<(f64, f64)> = self
             .data
             .iter()
-            .map(|d| (d.2.timestamp() as f64, d.0 as f64))
+            .map(|d| (d.2.timestamp_millis() as f64, d.0 as f64))
             .collect();
 
         let dataset_up = Dataset::default()
             .name("Upload")
-            .marker(Marker::HalfBlock)
-            .graph_type(GraphType::Bar)
-            .style(Style::default().fg(Color::Magenta))
+            .marker(Marker::Dot)
+            .graph_type(GraphType::Line)
+            .style(Style::default().fg(Color::Green))
             .data(&upload_data);
 
         let download_data: Vec<(f64, f64)> = self
             .data
             .iter()
-            .map(|d| (d.2.timestamp() as f64, d.1 as f64))
+            .map(|d| (d.2.timestamp_millis() as f64, d.1 as f64))
             .collect();
 
         let dataset_down = Dataset::default()
             .name("Download")
-            .marker(Marker::HalfBlock)
-            .graph_type(GraphType::Bar)
-            .style(Style::default().fg(Color::Magenta))
+            .marker(Marker::Dot)
+            .graph_type(GraphType::Line)
+            .style(Style::default().fg(Color::Cyan))
             .data(&download_data);
 
-        let x_axis = Axis::default()
-            .title("Time".blue())
-            .bounds([self.data_min.0 as f64, self.data_max.0 as f64]);
+        let x_bounds = [
+            self.data.first().unwrap().2.timestamp_millis() as f64,
+            self.data.last().unwrap().2.timestamp_millis() as f64 + 1.0,
+        ];
+        let areas = Layout::vertical([Constraint::Percentage(50), Constraint::Percentage(50)])
+            .split(frame.area());
 
-        let y_axis = Axis::default()
-            .title("Time".blue())
-            .bounds([self.data_min.1 as f64, self.data_max.1 as f64]);
+        let upload_chart = Chart::new(vec![dataset_up])
+            .x_axis(Axis::default().title("Time".blue()).bounds(x_bounds))
+            .y_axis(
+                Axis::default()
+                    .title("Upload bytes".green())
+                    .bounds([self.data_min.0 as f64, self.data_max.0 as f64 + 1.0]),
+            );
+        let download_chart = Chart::new(vec![dataset_down])
+            .x_axis(Axis::default().title("Time".blue()).bounds(x_bounds))
+            .y_axis(
+                Axis::default()
+                    .title("Download bytes".cyan())
+                    .bounds([self.data_min.1 as f64, self.data_max.1 as f64 + 1.0]),
+            );
 
-        let chart = Chart::new(vec![dataset_up, dataset_down])
-            .x_axis(x_axis)
-            .y_axis(y_axis);
-
-        frame.render_widget(chart, frame.area());
+        frame.render_widget(upload_chart, areas[0]);
+        frame.render_widget(download_chart, areas[1]);
     }
 }
