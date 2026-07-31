@@ -3,12 +3,13 @@ use std::time::Duration;
 use chrono::{DateTime, Local};
 use crossterm::event::{self, Event, EventStream, KeyEventKind, KeyModifiers};
 use futures::StreamExt;
+use human_repr::HumanThroughput;
 use ratatui::{
     DefaultTerminal, Frame,
-    layout::{Constraint, Layout},
+    layout::{Alignment, Constraint, Layout},
     style::{Color, Style, Stylize},
     symbols::Marker,
-    widgets::{Axis, Chart, Dataset, GraphType},
+    widgets::{Axis, Chart, Dataset, GraphType, Paragraph},
 };
 use sysinfo::Networks;
 use tokio::{
@@ -42,6 +43,10 @@ async fn main() -> anyhow::Result<()> {
             let (up, down) = nets.iter().fold((0_u64, 0_u64), |(up, down), (_, net)| {
                 (up + net.transmitted(), down + net.received())
             });
+
+            // Network counters are measured over the 500 ms refresh interval.
+            let up = up.saturating_mul(2);
+            let down = down.saturating_mul(2);
 
             if tx1.send(Msg::Data { up, down, time }).await.is_err() {
                 break;
@@ -191,25 +196,37 @@ impl App {
             self.data.first().unwrap().2.timestamp_millis() as f64,
             self.data.last().unwrap().2.timestamp_millis() as f64 + 1.0,
         ];
-        let areas = Layout::vertical([Constraint::Percentage(50), Constraint::Percentage(50)])
-            .split(frame.area());
+        let areas = Layout::vertical([
+            Constraint::Length(1),
+            Constraint::Fill(1),
+            Constraint::Fill(1),
+        ])
+        .split(frame.area());
+        let current = self.data.last().unwrap();
+        let status = Paragraph::new(format!(
+            "Upload: {}   Download: {}",
+            current.0.human_throughput_bytes(),
+            current.1.human_throughput_bytes(),
+        ))
+        .alignment(Alignment::Center);
 
         let upload_chart = Chart::new(vec![dataset_up])
             .x_axis(Axis::default().title("Time".blue()).bounds(x_bounds))
             .y_axis(
                 Axis::default()
-                    .title("Upload bytes".green())
+                    .title("Upload (B/s)".green())
                     .bounds([self.data_min.0 as f64, self.data_max.0 as f64 + 1.0]),
             );
         let download_chart = Chart::new(vec![dataset_down])
             .x_axis(Axis::default().title("Time".blue()).bounds(x_bounds))
             .y_axis(
                 Axis::default()
-                    .title("Download bytes".cyan())
+                    .title("Download (B/s)".cyan())
                     .bounds([self.data_min.1 as f64, self.data_max.1 as f64 + 1.0]),
             );
 
-        frame.render_widget(upload_chart, areas[0]);
-        frame.render_widget(download_chart, areas[1]);
+        frame.render_widget(status, areas[0]);
+        frame.render_widget(upload_chart, areas[1]);
+        frame.render_widget(download_chart, areas[2]);
     }
 }
