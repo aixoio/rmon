@@ -1,8 +1,16 @@
 use std::time::Duration;
 
+use chrono::{DateTime, Local};
 use crossterm::event::{self, Event, EventStream, KeyEventKind, KeyModifiers};
 use futures::StreamExt;
-use ratatui::{DefaultTerminal, Terminal};
+use ratatui::{
+    DefaultTerminal, Frame, Terminal,
+    buffer::Buffer,
+    layout::Rect,
+    style::{Color, Style, Stylize},
+    symbols::{Marker, marker},
+    widgets::{Axis, Chart, Dataset, GraphType, Widget},
+};
 use sysinfo::Networks;
 use tokio::{
     sync::mpsc::{self, Receiver},
@@ -10,13 +18,17 @@ use tokio::{
 };
 
 enum Msg {
-    Data { up: u64, down: u64 },
+    Data {
+        up: u64,
+        down: u64,
+        time: DateTime<Local>,
+    },
     Crossterm(event::Event),
 }
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    let (tx, mut rx) = mpsc::channel(8);
+    let (tx, rx) = mpsc::channel(8);
 
     let tx1 = tx.clone();
     task::spawn(async move {
@@ -26,12 +38,13 @@ async fn main() -> anyhow::Result<()> {
         loop {
             i.tick().await;
             nets.refresh(true);
+            let time = Local::now();
 
             let (up, down) = nets.iter().fold((0_u64, 0_u64), |(up, down), (_, net)| {
                 (up + net.transmitted(), down + net.received())
             });
 
-            if tx1.send(Msg::Data { up, down }).await.is_err() {
+            if tx1.send(Msg::Data { up, down, time }).await.is_err() {
                 break;
             }
         }
@@ -48,7 +61,7 @@ async fn main() -> anyhow::Result<()> {
     });
 
     let mut terminal = ratatui::init();
-    let app = App::new(rx);
+    let mut app = App::new(rx);
     let res = app.run(&mut terminal).await;
     ratatui::restore();
 
@@ -59,7 +72,7 @@ struct App {
     rx: Receiver<Msg>,
 
     running: bool,
-    data: Vec<(u64, u64)>,
+    data: Vec<(u64, u64, DateTime<Local>)>,
     data_min: (u64, u64),
     data_max: (u64, u64),
 }
@@ -88,14 +101,18 @@ impl App {
 
             match msg {
                 Msg::Crossterm(e) => self.handle_events(e)?,
-                Msg::Data { up, down } => self.update_data(up, down),
+                Msg::Data { up, down, time } => {
+                    self.update_data(up, down, time);
+
+                    terminal.draw(|f| self.draw(f))?;
+                }
             }
         }
 
         Ok(())
     }
 
-    fn update_data(&mut self, up: u64, down: u64) {
+    fn update_data(&mut self, up: u64, down: u64, time: DateTime<Local>) {
         let (umin, dmin) = self.data_min;
 
         if umin > up {
@@ -116,7 +133,7 @@ impl App {
             self.data_max.1 = down;
         }
 
-        self.data.push((up, down));
+        self.data.push((up, down, time));
     }
 
     fn handle_events(&mut self, event: Event) -> anyhow::Result<()> {
@@ -135,5 +152,47 @@ impl App {
         }
 
         Ok(())
+    }
+
+    fn draw(&self, frame: &mut Frame) {
+        let upload_data: Vec<(f64, f64)> = self
+            .data
+            .iter()
+            .map(|d| (d.2.timestamp() as f64, d.0 as f64))
+            .collect();
+
+        let dataset_up = Dataset::default()
+            .name("Upload")
+            .marker(Marker::HalfBlock)
+            .graph_type(GraphType::Bar)
+            .style(Style::default().fg(Color::Magenta))
+            .data(&upload_data);
+
+        let download_data: Vec<(f64, f64)> = self
+            .data
+            .iter()
+            .map(|d| (d.2.timestamp() as f64, d.1 as f64))
+            .collect();
+
+        let dataset_down = Dataset::default()
+            .name("Download")
+            .marker(Marker::HalfBlock)
+            .graph_type(GraphType::Bar)
+            .style(Style::default().fg(Color::Magenta))
+            .data(&download_data);
+
+        let x_axis = Axis::default()
+            .title("Time".blue())
+            .bounds([self.data_min.0 as f64, self.data_max.0 as f64]);
+
+        let y_axis = Axis::default()
+            .title("Time".blue())
+            .bounds([self.data_min.1 as f64, self.data_max.1 as f64]);
+
+        let chart = Chart::new(vec![dataset_up, dataset_down])
+            .x_axis(x_axis)
+            .y_axis(y_axis);
+
+        frame.render_widget(chart, frame.area());
     }
 }
